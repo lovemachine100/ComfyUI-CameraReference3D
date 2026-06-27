@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 
-// B03 Camera Reference: motion を選ぶとノード上にその動きのサンプル映像をプレビュー表示
+// Camera Reference (3D): motion を選ぶとノード上にその動きのサンプル映像をプレビュー表示
 const PKG = "ComfyUI-CameraReference3D";
 const BASE = `/extensions/${PKG}/previews/`;
 // 固定リストは持たない: 選択名の <name>.mp4 を素直に読み、無ければ static.mp4 にフォールバック。
@@ -32,9 +32,9 @@ function setWidgetHidden(w, hidden) {
 }
 
 app.registerExtension({
-  name: "B03.CameraReferencePreview",
+  name: "CameraReference3D.Preview",
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== "B03CameraReferenceGenerator") return;
+    if (nodeData.name !== "CameraReference3D") return;
 
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
@@ -149,11 +149,11 @@ app.registerExtension({
           fd.append("name", (name || "").trim());
           label.textContent = "⏳ アップロード中…";
           try {
-            const resp = await fetch("/b03_camera_reference/upload", { method: "POST", body: fd });
+            const resp = await fetch("/camera_reference_3d/upload", { method: "POST", body: fd });
             const j = await resp.json().catch(() => ({}));
             if (!resp.ok) {
               label.textContent = "✖ 失敗: " + (j.error || resp.status);
-              console.error("[B03] upload failed", j);
+              console.error("[CameraReference3D] upload failed", j);
               return;
             }
             // motion ドロップダウンに足して即選択(ページ再読込なしで使える)
@@ -168,7 +168,7 @@ app.registerExtension({
               (j.renamed ? "（同名のため改名）" : "（アップロード完了）");
           } catch (e) {
             label.textContent = "✖ アップロードエラー";
-            console.error("[B03] upload error", e);
+            console.error("[CameraReference3D] upload error", e);
           }
         };
         document.body.appendChild(inp);

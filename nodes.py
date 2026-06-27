@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ComfyUI-B03-CameraReference
+ComfyUI-CameraReference3D
 
 中立な 3D シーン(柱の回廊+床+天井)に、選んだカメラ動作を正確に当てて
 「カメラ動作 参照フレーム列(IMAGE バッチ)」をその場で生成するノード。
@@ -8,7 +8,7 @@ ComfyUI-B03-CameraReference
 そのカメラの動きだけを生成へ転写する(Mode B が ComfyUI 内で完結)。
 
 パラメトリック生成は依存ゼロ(numpy + PIL + torch、ComfyUI 同梱)。
-ロジックは projects/B03 の make_reference_video.py と同一。
+ロジックはスタンドアロン CLI make_reference_video.py と同一。
 
 web/previews/ に動画 (.mp4/.webm/.mov/.gif) を置くと、その名前が motion ドロップダウンに
 自動で並び「選択 → その動画自体を参照フレームとして使う」モードになる。動画モードでは frames /
@@ -270,7 +270,7 @@ def render_frame(faces, C, yaw, pitch, roll, fmul, W, H, base_f):
     return img
 
 
-class B03CameraReferenceGenerator:
+class CameraReference3D:
     """中立3Dシーンからカメラ動作の参照フレーム(IMAGEバッチ)を生成。LTXAddVideoICLoRAGuide.image へ。"""
 
     @classmethod
@@ -296,7 +296,7 @@ class B03CameraReferenceGenerator:
     RETURN_TYPES = ("IMAGE", "FLOAT")
     RETURN_NAMES = ("frames", "fps")
     FUNCTION = "generate"
-    CATEGORY = "B03/Camera"
+    CATEGORY = "CameraReference3D"
     DESCRIPTION = "中立3Dシーンに正確なカメラ軌道を当てた参照フレーム列を生成(Mode B のIC-LoRAガイド入力)。previews/ の動画名を選ぶとその動画を参照として使う。fps を後続へ引き継ぐ"
 
     def generate(self, motion, frames, width, height, amount, hfov, fps=25.0, custom_motion=""):
@@ -328,8 +328,8 @@ class B03CameraReferenceGenerator:
         return (torch.from_numpy(arr), float(fps))
 
 
-NODE_CLASS_MAPPINGS = {"B03CameraReferenceGenerator": B03CameraReferenceGenerator}
-NODE_DISPLAY_NAME_MAPPINGS = {"B03CameraReferenceGenerator": "🎥 Camera Reference (3D)"}
+NODE_CLASS_MAPPINGS = {"CameraReference3D": CameraReference3D}
+NODE_DISPLAY_NAME_MAPPINGS = {"CameraReference3D": "🎥 Camera Reference (3D)"}
 
 
 # ---- アップロード用サーバルート: 動画を web/previews/ に保存(ComfyUI 実行時のみ登録) ----
@@ -353,7 +353,7 @@ def _register_upload_route():
         stem = _SAFE.sub("_", raw or "").strip("._")
         return stem or "clip"
 
-    @instance.routes.post("/b03_camera_reference/upload")
+    @instance.routes.post("/camera_reference_3d/upload")
     async def _upload(request):
         try:
             reader = await request.multipart()

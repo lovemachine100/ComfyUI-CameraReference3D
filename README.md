@@ -1,4 +1,4 @@
-# ComfyUI-B03-CameraReference 🎥
+# ComfyUI-CameraReference3D 🎥
 
 **Camera Reference (3D)** — a ComfyUI custom node that generates an exact, parametric
 *camera-motion reference frame sequence* by flying a chosen camera trajectory through a
@@ -32,7 +32,7 @@ Dependencies (`numpy`, `Pillow`, `torch`) all ship with ComfyUI — nothing extr
 
 ## Node
 
-**`🎥 Camera Reference (3D)`** (`B03CameraReferenceGenerator`, category `B03/Camera`)
+**`🎥 Camera Reference (3D)`** (`CameraReference3D`, category `CameraReference3D`)
 
 | Input | Description |
 |---|---|
@@ -66,7 +66,7 @@ imports `imageio` / `cv2` only when a clip is actually used — the parametric p
 #### Upload a clip from the node (no manual file copying)
 
 The node has a **`📤 動画をアップロード → previews`** button. Click it, pick a local video, and (optionally)
-edit the save name — the file is POSTed to a server route (`/b03_camera_reference/upload`) that writes it
+edit the save name — the file is POSTed to a server route (`/camera_reference_3d/upload`) that writes it
 into `web/previews/` and the name is added to the dropdown immediately (no page reload). **Name collisions
 never overwrite**: an existing `name.mp4` makes the upload land as `name_1.mp4`, `name_2.mp4`, … and the
 final name is reported back. The route validates the extension against the allowed video types and
@@ -108,7 +108,7 @@ elif m == "my_move":  C[0] += 2.0*A*e   # e.g. translate right
 
 **Add its on-node preview clip** (220×220, lives in `web/previews/<name>.mp4`) and add
 `<name>` to the `KNOWN` set in `web/preview.js`. A standalone CLI with identical logic
-(`make_reference_video.py`) is kept in the upstream B03 project for rendering these clips.
+(`make_reference_video.py`) is kept alongside the node for rendering these clips.
 
 `nodes.py` / `preview.js` changes take effect on **ComfyUI restart**.
 
