@@ -36,16 +36,28 @@ Dependencies (`numpy`, `Pillow`, `torch`) all ship with ComfyUI — nothing extr
 
 | Input | Description |
 |---|---|
-| `motion` | Camera-motion dropdown (17 base moves + alias `low_angle`) |
+| `motion` | Camera-motion dropdown — 17 base moves + alias `low_angle`, **plus any video dropped into `web/previews/`** (see below) |
 | `frames` | Frame count — match your generation's `length` (typ. 97 / 49) |
 | `width` / `height` | Resolution — match the generation (typ. 544×960) |
 | `amount` | Motion strength multiplier (0–3, default 1.0) |
 | `hfov` | Horizontal field of view in degrees (default 55°) |
+| `fps` | Frames-per-second to carry to downstream nodes (default 25; for a dropped video its native fps is used instead) |
 | `custom_motion` *(optional)* | Override `motion` with text. Combine base tokens with `+` (e.g. `dolly_in+tilt_up`). Empty → use `motion`. |
 
-Output: `IMAGE` (`N×H×W×3`) → `LTXAddVideoICLoRAGuide.image`.
+Outputs:
+- `frames` — `IMAGE` (`N×H×W×3`) → `LTXAddVideoICLoRAGuide.image`
+- `fps` — `FLOAT` → wire into downstream video nodes (save / VHS / conditioning) so timing is inherited
 
 When you pick a `motion`, a sample clip of that move previews live on the node.
+
+### Use your own clip as the reference (drop-in videos)
+
+Drop any video (`.mp4` / `.webm` / `.mov` / `.gif` / …) into `web/previews/` and **its name appears
+in the `motion` dropdown** after a page refresh. Selecting it makes the node **decode that video** and
+resample it to `frames` × `width` × `height` as the reference batch (its native fps flows out of `fps`),
+instead of the parametric corridor render. Names that match a parametric move (or a `+`-composite of base
+tokens) still render parametrically. Video decoding lazily imports `imageio` / `cv2` only when a clip is
+actually used — the parametric path stays dependency-free.
 
 ### Base motions (17)
 

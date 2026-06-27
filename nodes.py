@@ -7,10 +7,15 @@ ComfyUI-B03-CameraReference
 出力を LTXAddVideoICLoRAGuide の image 入力に直結すると、Cameraman IC-LoRA が
 そのカメラの動きだけを生成へ転写する(Mode B が ComfyUI 内で完結)。
 
-外部スクリプト・中間 mp4 不要。依存は numpy + PIL + torch(ComfyUI 同梱)。
+パラメトリック生成は依存ゼロ(numpy + PIL + torch、ComfyUI 同梱)。
 ロジックは projects/B03 の make_reference_video.py と同一。
+
+web/previews/ に動画 (.mp4/.webm/.mov/.gif) を置くと、その名前が motion ドロップダウンに
+自動で並び「選択 → その動画自体を参照フレームとして使う」モードになる(パラメトリックでない名前は
+動画をデコードして frames/解像度にリサンプル)。動画デコードのときだけ imageio/cv2 を遅延 import。
 """
 import math
+import os
 import numpy as np
 import torch
 from PIL import Image, ImageDraw
@@ -26,8 +31,86 @@ ALIASES = {
     "low_angle": "pedestal_down+tilt_up",   # カメラが下がって被写体を見上げる=ローアングル
 }
 
-# ドロップダウン表示順(別名 → 基本動作)
+# パラメトリックに生成できる名前(別名 → 基本動作)
 MOTIONS = list(ALIASES.keys()) + BASE_MOTIONS
+
+# web/previews/ に置いた動画も選択肢にする
+PREVIEW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "previews")
+VIDEO_EXTS = (".mp4", ".webm", ".mov", ".gif", ".mkv", ".avi")
+
+
+def list_preview_stems():
+    """web/previews/ 内の動画ファイル名(拡張子なし)を返す。"""
+    try:
+        return sorted({os.path.splitext(f)[0] for f in os.listdir(PREVIEW_DIR)
+                       if f.lower().endswith(VIDEO_EXTS)})
+    except OSError:
+        return []
+
+
+def motion_choices():
+    """ドロップダウン候補 = パラメトリック名 + previews/ にしか無い動画名(末尾に追加)。"""
+    stems = list_preview_stems()
+    extra = [s for s in stems if s not in MOTIONS]
+    return MOTIONS + extra
+
+
+def is_parametric(name):
+    """name が基本トークン(別名/複合含む)だけで構成されているか = その場で計算できるか。"""
+    comps = expand_motion(name)
+    return len(comps) > 0 and all(c in BASE_MOTIONS for c in comps)
+
+
+def _find_preview_file(stem):
+    """previews/ から stem に一致する動画ファイルの実パスを返す(無ければ None)。"""
+    for ext in VIDEO_EXTS:
+        p = os.path.join(PREVIEW_DIR, stem + ext)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def load_video_frames(path, frames, width, height):
+    """動画をデコードし frames 枚に均等リサンプル + width×height にリサイズ。(tensor, native_fps) を返す。"""
+    native_fps = None
+    raw = None
+    # 1) imageio (imageio-ffmpeg 同梱) を優先
+    try:
+        import imageio.v2 as imageio
+        rdr = imageio.get_reader(path)
+        try:
+            native_fps = float(rdr.get_meta_data().get("fps")) or None
+        except Exception:
+            native_fps = None
+        raw = [f for f in rdr]
+        rdr.close()
+    except Exception:
+        raw = None
+    # 2) cv2 フォールバック
+    if not raw:
+        import cv2
+        cap = cv2.VideoCapture(path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        native_fps = float(fps) if fps and fps > 0 else None
+        raw = []
+        while True:
+            ok, fr = cap.read()
+            if not ok:
+                break
+            raw.append(fr[:, :, ::-1])  # BGR -> RGB
+        cap.release()
+    if not raw:
+        raise RuntimeError("動画をデコードできませんでした: %s" % path)
+
+    n = len(raw)
+    arr = np.empty((frames, height, width, 3), dtype=np.float32)
+    for k in range(frames):
+        j = int(round(k * (n - 1) / (frames - 1))) if frames > 1 else 0
+        j = max(0, min(n - 1, j))
+        img = Image.fromarray(np.asarray(raw[j])).convert("RGB").resize((width, height), Image.BILINEAR)
+        arr[k] = np.asarray(img, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr), native_fps
+
 
 SCENE_CENTER = np.array([0.0, 1.6, 7.0])
 
@@ -194,14 +277,17 @@ class B03CameraReferenceGenerator:
 
     @classmethod
     def INPUT_TYPES(cls):
+        # 候補は呼ばれるたび previews/ を走査して動的生成(動画を置けば再読込で並ぶ)
         return {
             "required": {
-                "motion": (MOTIONS, {"default": "orbit_cw"}),
+                "motion": (motion_choices(), {"default": "orbit_cw"}),
                 "frames": ("INT", {"default": 97, "min": 1, "max": 1000}),
                 "width": ("INT", {"default": 544, "min": 64, "max": 4096, "step": 8}),
                 "height": ("INT", {"default": 960, "min": 64, "max": 4096, "step": 8}),
                 "amount": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05}),
                 "hfov": ("FLOAT", {"default": 55.0, "min": 20.0, "max": 110.0, "step": 1.0}),
+                # 出力 frames に対して後続ノードへ引き継ぐ fps。動画選択時はその実 fps が優先される
+                "fps": ("FLOAT", {"default": 25.0, "min": 1.0, "max": 240.0, "step": 0.01}),
             },
             "optional": {
                 # 複合や任意指定。空でないとき motion を上書き(例: "truck_left+pan_right")
@@ -209,14 +295,28 @@ class B03CameraReferenceGenerator:
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("frames",)
+    RETURN_TYPES = ("IMAGE", "FLOAT")
+    RETURN_NAMES = ("frames", "fps")
     FUNCTION = "generate"
     CATEGORY = "B03/Camera"
-    DESCRIPTION = "中立3Dシーンに正確なカメラ軌道を当てた参照フレーム列を生成(Mode B のIC-LoRAガイド入力)"
+    DESCRIPTION = "中立3Dシーンに正確なカメラ軌道を当てた参照フレーム列を生成(Mode B のIC-LoRAガイド入力)。previews/ の動画名を選ぶとその動画を参照として使う。fps を後続へ引き継ぐ"
 
-    def generate(self, motion, frames, width, height, amount, hfov, custom_motion=""):
+    def generate(self, motion, frames, width, height, amount, hfov, fps=25.0, custom_motion=""):
         mot = custom_motion.strip() if custom_motion and custom_motion.strip() else motion
+
+        # パラメトリックでない名前(= previews/ に置いた動画)なら、その動画を参照として使う
+        if not is_parametric(mot):
+            path = _find_preview_file(mot)
+            if path is None:
+                raise ValueError(
+                    "motion %r はパラメトリック動作でも previews/ の動画でもありません。"
+                    "基本トークンの組合せ(例 dolly_in+tilt_up)にするか web/previews/ に %s.mp4 を置いてください。"
+                    % (mot, mot))
+            tensor, native_fps = load_video_frames(path, frames, width, height)
+            out_fps = float(native_fps) if native_fps else float(fps)
+            return (tensor, out_fps)
+
+        # パラメトリック生成(従来パス)
         faces = build_scene()
         base_f = _hfov_focal(width, hfov)
         arr = np.empty((frames, height, width, 3), dtype=np.float32)
@@ -225,7 +325,7 @@ class B03CameraReferenceGenerator:
             C, yaw, pitch, roll, fmul = cam_state(mot, t, amount)
             img = render_frame(faces, C, yaw, pitch, roll, fmul, width, height, base_f)
             arr[i] = np.asarray(img, dtype=np.float32) / 255.0
-        return (torch.from_numpy(arr),)
+        return (torch.from_numpy(arr), float(fps))
 
 
 NODE_CLASS_MAPPINGS = {"B03CameraReferenceGenerator": B03CameraReferenceGenerator}

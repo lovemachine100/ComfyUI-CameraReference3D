@@ -3,9 +3,8 @@ import { app } from "../../scripts/app.js";
 // B03 Camera Reference: motion を選ぶとノード上にその動きのサンプル映像をプレビュー表示
 const PKG = "ComfyUI-CameraReference3D";
 const BASE = `/extensions/${PKG}/previews/`;
-const KNOWN = new Set(["low_angle","pan_left","pan_right","tilt_up","tilt_down","roll_cw","roll_ccw",
-  "dolly_in","dolly_out","truck_left","truck_right","pedestal_up","pedestal_down",
-  "zoom_in","zoom_out","orbit_cw","orbit_ccw","static"]);
+// 固定リストは持たない: 選択名の <name>.mp4 を素直に読み、無ければ static.mp4 にフォールバック。
+// これで previews/ に動画を足すだけで(ドロップダウンに並び)そのままプレビューも出る。
 
 app.registerExtension({
   name: "B03.CameraReferencePreview",
@@ -43,17 +42,23 @@ app.registerExtension({
       const resolveKey = () => {
         const cm = (customWidget()?.value || "").trim();
         if (cm) {
-          // 複合は先頭成分でプレビュー(無ければ static)
+          // 複合は先頭成分でプレビュー(該当 mp4 が無ければ onerror で static)
           const first = cm.split("+")[0].trim();
-          return { key: KNOWN.has(first) ? first : "static", label: cm + "（先頭でプレビュー）" };
+          return { key: first || "static", label: cm + "（先頭でプレビュー）" };
         }
         const m = motionWidget()?.value || "orbit_cw";
-        return { key: KNOWN.has(m) ? m : "static", label: m };
+        return { key: m, label: m };
       };
+
+      // 読み込み失敗(該当 mp4 無し)は一度だけ static.mp4 にフォールバック
+      video.addEventListener("error", () => {
+        const fb = BASE + "static.mp4";
+        if (!video.src.endsWith(fb)) video.src = fb;
+      });
 
       this._b03update = () => {
         const { key, label: txt } = resolveKey();
-        const src = BASE + key + ".mp4";
+        const src = BASE + encodeURIComponent(key) + ".mp4";
         if (!video.src.endsWith(src)) {
           video.src = src;
           const p = video.play && video.play();
