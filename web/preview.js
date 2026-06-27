@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 
 // B03 Camera Reference: motion を選ぶとノード上にその動きのサンプル映像をプレビュー表示
-const PKG = "ComfyUI-B03-CameraReference";
+const PKG = "ComfyUI-CameraReference3D";
 const BASE = `/extensions/${PKG}/previews/`;
 const KNOWN = new Set(["low_angle","pan_left","pan_right","tilt_up","tilt_down","roll_cw","roll_ccw",
   "dolly_in","dolly_out","truck_left","truck_right","pedestal_up","pedestal_down",
