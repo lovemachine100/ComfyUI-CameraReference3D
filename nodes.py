@@ -11,8 +11,9 @@ ComfyUI-B03-CameraReference
 ロジックは projects/B03 の make_reference_video.py と同一。
 
 web/previews/ に動画 (.mp4/.webm/.mov/.gif) を置くと、その名前が motion ドロップダウンに
-自動で並び「選択 → その動画自体を参照フレームとして使う」モードになる(パラメトリックでない名前は
-動画をデコードして frames/解像度にリサンプル)。動画デコードのときだけ imageio/cv2 を遅延 import。
+自動で並び「選択 → その動画自体を参照フレームとして使う」モードになる。動画モードでは frames /
+width / height / amount / hfov / fps の widget は無視し、動画ネイティブの全フレーム・解像度・fps を
+そのまま出力する。動画デコードのときだけ imageio/cv2 を遅延 import。
 """
 import math
 import os
@@ -70,8 +71,8 @@ def _find_preview_file(stem):
     return None
 
 
-def load_video_frames(path, frames, width, height):
-    """動画をデコードし frames 枚に均等リサンプル + width×height にリサイズ。(tensor, native_fps) を返す。"""
+def load_video_frames(path):
+    """動画をデコードし、ネイティブの全フレーム・解像度のまま返す。(tensor[N,H,W,3], native_fps)。"""
     native_fps = None
     raw = None
     # 1) imageio (imageio-ffmpeg 同梱) を優先
@@ -102,13 +103,10 @@ def load_video_frames(path, frames, width, height):
     if not raw:
         raise RuntimeError("動画をデコードできませんでした: %s" % path)
 
-    n = len(raw)
-    arr = np.empty((frames, height, width, 3), dtype=np.float32)
-    for k in range(frames):
-        j = int(round(k * (n - 1) / (frames - 1))) if frames > 1 else 0
-        j = max(0, min(n - 1, j))
-        img = Image.fromarray(np.asarray(raw[j])).convert("RGB").resize((width, height), Image.BILINEAR)
-        arr[k] = np.asarray(img, dtype=np.float32) / 255.0
+    # ネイティブ解像度・全フレームのまま(リサンプル/リサイズしない)
+    frames_list = [np.asarray(Image.fromarray(np.asarray(fr)).convert("RGB"),
+                              dtype=np.float32) / 255.0 for fr in raw]
+    arr = np.stack(frames_list, axis=0)  # N, H, W, 3 (動画ネイティブ)
     return torch.from_numpy(arr), native_fps
 
 
@@ -304,7 +302,9 @@ class B03CameraReferenceGenerator:
     def generate(self, motion, frames, width, height, amount, hfov, fps=25.0, custom_motion=""):
         mot = custom_motion.strip() if custom_motion and custom_motion.strip() else motion
 
-        # パラメトリックでない名前(= previews/ に置いた動画)なら、その動画を参照として使う
+        # パラメトリックでない名前(= previews/ に置いた動画)なら、その動画を参照として使う。
+        # frames / width / height / amount / hfov / fps の widget は無視し、動画ネイティブの
+        # 全フレーム・解像度・fps をそのまま出力する。
         if not is_parametric(mot):
             path = _find_preview_file(mot)
             if path is None:
@@ -312,7 +312,7 @@ class B03CameraReferenceGenerator:
                     "motion %r はパラメトリック動作でも previews/ の動画でもありません。"
                     "基本トークンの組合せ(例 dolly_in+tilt_up)にするか web/previews/ に %s.mp4 を置いてください。"
                     % (mot, mot))
-            tensor, native_fps = load_video_frames(path, frames, width, height)
+            tensor, native_fps = load_video_frames(path)
             out_fps = float(native_fps) if native_fps else float(fps)
             return (tensor, out_fps)
 
@@ -330,3 +330,84 @@ class B03CameraReferenceGenerator:
 
 NODE_CLASS_MAPPINGS = {"B03CameraReferenceGenerator": B03CameraReferenceGenerator}
 NODE_DISPLAY_NAME_MAPPINGS = {"B03CameraReferenceGenerator": "🎥 Camera Reference (3D)"}
+
+
+# ---- アップロード用サーバルート: 動画を web/previews/ に保存(ComfyUI 実行時のみ登録) ----
+def _register_upload_route():
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except Exception:
+        return  # importlib 単体テスト等、ComfyUI サーバが無い環境では何もしない
+    instance = getattr(PromptServer, "instance", None)
+    if instance is None:
+        return
+
+    import re
+    _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+    def _sanitize_stem(raw):
+        # ユーザが拡張子付きで入れても落とす
+        if raw and raw.lower().endswith(VIDEO_EXTS):
+            raw = os.path.splitext(raw)[0]
+        stem = _SAFE.sub("_", raw or "").strip("._")
+        return stem or "clip"
+
+    @instance.routes.post("/b03_camera_reference/upload")
+    async def _upload(request):
+        try:
+            reader = await request.multipart()
+        except Exception:
+            return web.json_response({"error": "multipart ではありません"}, status=400)
+
+        desired = ""
+        orig_name = ""
+        data = b""
+        async for part in reader:
+            if part.name == "name":
+                desired = (await part.text()).strip()
+            elif part.name in ("file", "video", "image"):
+                orig_name = part.filename or ""
+                buf = bytearray()
+                while True:
+                    chunk = await part.read_chunk()
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                data = bytes(buf)
+
+        if not data:
+            return web.json_response({"error": "ファイル本体がありません"}, status=400)
+        ext = os.path.splitext(orig_name)[1].lower()
+        if ext not in VIDEO_EXTS:
+            return web.json_response(
+                {"error": "対応していない拡張子: %r (許可: %s)" % (ext, ", ".join(VIDEO_EXTS))},
+                status=400)
+
+        stem = _sanitize_stem(desired or os.path.basename(orig_name))
+        os.makedirs(PREVIEW_DIR, exist_ok=True)
+        # 衝突したら _1, _2, ... で必ず別名にする(上書きしない)
+        target = os.path.join(PREVIEW_DIR, stem + ext)
+        renamed = False
+        i = 1
+        while os.path.exists(target):
+            renamed = True
+            target = os.path.join(PREVIEW_DIR, "%s_%d%s" % (stem, i, ext))
+            i += 1
+
+        # PREVIEW_DIR の外に出ないことを最終確認(多重防御)
+        if os.path.commonpath([os.path.abspath(target), os.path.abspath(PREVIEW_DIR)]) != os.path.abspath(PREVIEW_DIR):
+            return web.json_response({"error": "不正な保存先"}, status=400)
+
+        with open(target, "wb") as f:
+            f.write(data)
+
+        final = os.path.basename(target)
+        return web.json_response({
+            "name": os.path.splitext(final)[0],   # ドロップダウンに足す stem
+            "filename": final,
+            "renamed": renamed,
+        })
+
+
+_register_upload_route()

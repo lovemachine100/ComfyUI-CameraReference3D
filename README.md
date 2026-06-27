@@ -41,7 +41,7 @@ Dependencies (`numpy`, `Pillow`, `torch`) all ship with ComfyUI — nothing extr
 | `width` / `height` | Resolution — match the generation (typ. 544×960) |
 | `amount` | Motion strength multiplier (0–3, default 1.0) |
 | `hfov` | Horizontal field of view in degrees (default 55°) |
-| `fps` | Frames-per-second to carry to downstream nodes (default 25; for a dropped video its native fps is used instead) |
+| `fps` | Frames-per-second to carry to downstream nodes (default 25). **Parametric moves only** — a dropped video uses its own native fps. |
 | `custom_motion` *(optional)* | Override `motion` with text. Combine base tokens with `+` (e.g. `dolly_in+tilt_up`). Empty → use `motion`. |
 
 Outputs:
@@ -53,11 +53,25 @@ When you pick a `motion`, a sample clip of that move previews live on the node.
 ### Use your own clip as the reference (drop-in videos)
 
 Drop any video (`.mp4` / `.webm` / `.mov` / `.gif` / …) into `web/previews/` and **its name appears
-in the `motion` dropdown** after a page refresh. Selecting it makes the node **decode that video** and
-resample it to `frames` × `width` × `height` as the reference batch (its native fps flows out of `fps`),
-instead of the parametric corridor render. Names that match a parametric move (or a `+`-composite of base
-tokens) still render parametrically. Video decoding lazily imports `imageio` / `cv2` only when a clip is
-actually used — the parametric path stays dependency-free.
+in the `motion` dropdown** after a page refresh. Selecting it makes the node **decode that video and output
+its native frames, resolution and fps unchanged** as the reference batch — instead of the parametric
+corridor render.
+
+In this video mode the geometry widgets don't apply, so the node UI **hides `amount`, `hfov`, `frames`,
+`width`, `height` and `fps`** while a video is selected (the clip itself dictates frame count, resolution
+and fps). Pick a parametric move again and they reappear. Names that match a parametric move (or a
+`+`-composite of base tokens) still render parametrically and honor those widgets. Video decoding lazily
+imports `imageio` / `cv2` only when a clip is actually used — the parametric path stays dependency-free.
+
+#### Upload a clip from the node (no manual file copying)
+
+The node has a **`📤 動画をアップロード → previews`** button. Click it, pick a local video, and (optionally)
+edit the save name — the file is POSTed to a server route (`/b03_camera_reference/upload`) that writes it
+into `web/previews/` and the name is added to the dropdown immediately (no page reload). **Name collisions
+never overwrite**: an existing `name.mp4` makes the upload land as `name_1.mp4`, `name_2.mp4`, … and the
+final name is reported back. The route validates the extension against the allowed video types and
+sanitizes the name (no path traversal). The thumbnail preview expects `.mp4`; other formats still work as
+references but won't show an on-node preview clip.
 
 ### Base motions (17)
 

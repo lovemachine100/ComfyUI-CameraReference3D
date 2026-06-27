@@ -6,6 +6,31 @@ const BASE = `/extensions/${PKG}/previews/`;
 // 固定リストは持たない: 選択名の <name>.mp4 を素直に読み、無ければ static.mp4 にフォールバック。
 // これで previews/ に動画を足すだけで(ドロップダウンに並び)そのままプレビューも出る。
 
+// パラメトリック(その場で 3D 計算する)動作の判定用。動画選択時はこれら以外になる。
+const BASE_MOTIONS = new Set(["dolly_in","dolly_out","pan_left","pan_right","tilt_up","tilt_down",
+  "truck_left","truck_right","pedestal_up","pedestal_down","roll_cw","roll_ccw",
+  "zoom_in","zoom_out","orbit_cw","orbit_ccw","static"]);
+const ALIAS_MOTIONS = new Set(["low_angle"]);
+function isParametric(name) {
+  if (ALIAS_MOTIONS.has(name)) return true;
+  const toks = String(name || "").split("+").map((s) => s.trim()).filter(Boolean);
+  return toks.length > 0 && toks.every((t) => BASE_MOTIONS.has(t) || ALIAS_MOTIONS.has(t));
+}
+// 動画モードで隠す widget: amount/hfov は完全に無関係、frames/width/height/fps は動画の値が使われる
+const HIDE_IN_VIDEO = ["amount", "hfov", "frames", "width", "height", "fps"];
+function setWidgetHidden(w, hidden) {
+  if (!w) return;
+  if (hidden) {
+    if (w.__b03type === undefined) { w.__b03type = w.type; w.__b03cs = w.computeSize; }
+    w.type = "b03hidden";
+    w.computeSize = () => [0, -4];
+    w.hidden = true;
+  } else if (w.__b03type !== undefined) {
+    w.type = w.__b03type; w.computeSize = w.__b03cs;
+    w.__b03type = undefined; w.__b03cs = undefined; w.hidden = false;
+  }
+}
+
 app.registerExtension({
   name: "B03.CameraReferencePreview",
   async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -64,7 +89,27 @@ app.registerExtension({
           const p = video.play && video.play();
           if (p && p.catch) p.catch(() => {});
         }
-        label.textContent = "▶ " + txt;
+
+        // 動画モードか? = 実効選択がパラメトリックでない
+        const cm = (customWidget()?.value || "").trim();
+        const eff = cm || (motionWidget()?.value || "orbit_cw");
+        const videoMode = !isParametric(eff);
+
+        // amount/hfov/frames/width/height/fps を動画モードでは隠す
+        let changed = false;
+        for (const name of HIDE_IN_VIDEO) {
+          const w = this.widgets?.find((x) => x.name === name);
+          const before = w && w.type;
+          setWidgetHidden(w, videoMode);
+          if (w && w.type !== before) changed = true;
+        }
+        if (changed && this.computeSize) {
+          const s = this.computeSize();
+          this.setSize([Math.max(this.size[0], s[0]), s[1]]);
+          this.setDirtyCanvas && this.setDirtyCanvas(true, true);
+        }
+
+        label.textContent = "▶ " + txt + (videoMode ? "  ·  動画のframes/解像度/fpsを使用" : "");
       };
 
       // widget の callback にフック
@@ -82,6 +127,53 @@ app.registerExtension({
       }
       const self = this;
       const updateSafe = () => { try { self._b03update(); } catch (e) {} };
+
+      // 動画を web/previews/ にアップロードするボタン
+      this.addWidget("button", "📤 動画をアップロード → previews", null, () => {
+        const inp = document.createElement("input");
+        inp.type = "file";
+        inp.accept = "video/*";
+        inp.style.display = "none";
+        inp.onchange = async () => {
+          const file = inp.files && inp.files[0];
+          inp.remove();
+          if (!file) return;
+          const baseName = file.name.replace(/\.[^.]+$/, "");
+          // 保存名を入力(変更可)。同名があればサーバ側で自動連番にする
+          const name = window.prompt(
+            "保存名(拡張子なし)。空欄ならファイル名を使用。\n同名が既にあれば自動で _1, _2 … を付けます。",
+            baseName);
+          if (name === null) return; // キャンセル
+          const fd = new FormData();
+          fd.append("file", file);
+          fd.append("name", (name || "").trim());
+          label.textContent = "⏳ アップロード中…";
+          try {
+            const resp = await fetch("/b03_camera_reference/upload", { method: "POST", body: fd });
+            const j = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+              label.textContent = "✖ 失敗: " + (j.error || resp.status);
+              console.error("[B03] upload failed", j);
+              return;
+            }
+            // motion ドロップダウンに足して即選択(ページ再読込なしで使える)
+            const mw = motionWidget();
+            if (mw && mw.options && Array.isArray(mw.options.values)) {
+              if (!mw.options.values.includes(j.name)) mw.options.values.push(j.name);
+              mw.value = j.name;
+              if (typeof mw.callback === "function") mw.callback(j.name);
+            }
+            updateSafe();
+            label.textContent = "▶ " + j.name +
+              (j.renamed ? "（同名のため改名）" : "（アップロード完了）");
+          } catch (e) {
+            label.textContent = "✖ アップロードエラー";
+            console.error("[B03] upload error", e);
+          }
+        };
+        document.body.appendChild(inp);
+        inp.click();
+      });
 
       updateSafe();
       // ノードサイズを少し広げてプレビューを見やすく
