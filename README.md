@@ -24,7 +24,7 @@ ComfyUI Manager (once published) or manual:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/OWNER/ComfyUI-CameraReference3D
+git clone https://github.com/lovemachine100/ComfyUI-CameraReference3D
 # restart ComfyUI
 ```
 

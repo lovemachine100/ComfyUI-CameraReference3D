@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy", "Pillow"]
 
 [project.urls]
-Repository = "https://github.com/OWNER/ComfyUI-CameraReference3D"
+Repository = "https://github.com/lovemachine100/ComfyUI-CameraReference3D"
 
 [tool.comfy]
 PublisherId = "kongo_jun"
