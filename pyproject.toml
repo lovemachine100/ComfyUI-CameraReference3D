@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-b03-camerareference"
+description = "Generate exact parametric camera-motion reference frames (IMAGE batch) from a neutral 3D corridor scene, for driving the LTX-2.3 Cameraman IC-LoRA guide input."
+version = "1.0.0"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["numpy", "Pillow"]
+
+[project.urls]
+Repository = "https://github.com/kongo-jun/ComfyUI-B03-CameraReference"
+
+[tool.comfy]
+PublisherId = "kongo_jun"
+DisplayName = "Camera Reference (3D)"
+Icon = ""
