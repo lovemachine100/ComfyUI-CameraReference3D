@@ -142,21 +142,95 @@ def _box(cx, cy, cz, sx, sy, sz, albedo):
     return [(np.array(poly, dtype=float), albedo) for poly in v.values()]
 
 
-def build_scene():
+def _ground(a=0.55, b=0.38, x0=-6, x1=7, z0=-3, z1=18):
+    """市松模様の床グリッド。"""
     faces = []
-    for zi in range(-2, 16):
-        for xi in range(-4, 5):
-            shade = 0.55 if (zi + xi) % 2 == 0 else 0.38
-            faces += [(np.array([(xi,0,zi),(xi+1,0,zi),(xi+1,0,zi+1),(xi,0,zi+1)], float), shade)]
-    for zi in range(0, 15):
-        shade = 0.30 if zi % 2 == 0 else 0.24
-        faces += [(np.array([(-4,3.6,zi),(5,3.6,zi),(5,3.6,zi+1),(-4,3.6,zi+1)], float), shade)]
-    for zi in range(1, 15, 2):
-        for x in (-3.2, 3.2):
-            faces += _box(x, 1.6, zi, 0.7, 3.2, 0.7, 0.62)
-    for (bx, by, bz) in [(-1.4,1.0,5),(1.6,2.2,8),(0.0,0.7,11),(-1.8,2.6,12)]:
-        faces += _box(bx, by, bz, 0.9, 0.9, 0.9, 0.7)
-    faces += [(np.array([(-4,0,15),(5,0,15),(5,3.6,15),(-4,3.6,15)], float), 0.2)]
+    for zi in range(z0, z1):
+        for xi in range(x0, x1):
+            shade = a if (zi + xi) % 2 == 0 else b
+            faces.append((np.array([(xi,0,zi),(xi+1,0,zi),(xi+1,0,zi+1),(xi,0,zi+1)], float), shade))
+    return faces
+
+
+def _sphere(cx, cy, cz, r, albedo=0.6, seg=10, rings=6):
+    """ローポリ UV 球(quad 面)。"""
+    faces = []
+    for i in range(rings):
+        th0, th1 = math.pi*i/rings, math.pi*(i+1)/rings
+        for j in range(seg):
+            ph0, ph1 = 2*math.pi*j/seg, 2*math.pi*(j+1)/seg
+            def P(th, ph):
+                return (cx + r*math.sin(th)*math.cos(ph), cy + r*math.cos(th), cz + r*math.sin(th)*math.sin(ph))
+            faces.append((np.array([P(th0,ph0), P(th0,ph1), P(th1,ph1), P(th1,ph0)], float), albedo))
+    return faces
+
+
+def _subject(cx, cz, h, albedo=0.62):
+    """人物プレースホルダ(脚+胴+頭の箱積み)。床(y=0)から高さ h。"""
+    leg_h, torso_h, head_h = h*0.45, h*0.35, h*0.20
+    faces = []
+    faces += _box(cx, leg_h/2, cz, h*0.22, leg_h, h*0.18, albedo)
+    faces += _box(cx, leg_h + torso_h/2, cz, h*0.34, torso_h, h*0.22, albedo)
+    faces += _box(cx, leg_h + torso_h + head_h/2, cz, h*0.18, head_h, h*0.18, albedo)
+    return faces
+
+
+def parse_props(text):
+    """props マルチライン DSL を面リストに変換。1行1プリミティブ、`#` はコメント。
+    box cx cy cz sx sy sz [shade] / sphere cx cy cz r [shade] / pillar cx cz h [r] /
+    wall z [h] / subject cx cz h / ground
+    """
+    faces = []
+    if not text:
+        return faces
+    for ln, raw in enumerate(str(text).splitlines(), 1):
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = s.split()
+        kind = parts[0].lower()
+        try:
+            n = [float(x) for x in parts[1:]]
+        except ValueError:
+            raise ValueError("props 行 %d: 数値が不正: %r" % (ln, raw))
+        if kind == "box" and len(n) >= 6:
+            faces += _box(n[0], n[1], n[2], n[3], n[4], n[5], n[6] if len(n) > 6 else 0.6)
+        elif kind == "sphere" and len(n) >= 4:
+            faces += _sphere(n[0], n[1], n[2], n[3], n[4] if len(n) > 4 else 0.6)
+        elif kind == "pillar" and len(n) >= 3:
+            r = n[3] if len(n) > 3 else 0.5
+            faces += _box(n[0], n[2]/2.0, n[1], r, n[2], r, 0.6)         # pillar cx cz h [r]
+        elif kind == "wall" and len(n) >= 1:
+            z, h = n[0], (n[1] if len(n) > 1 else 3.6)
+            faces.append((np.array([(-5,0,z),(6,0,z),(6,h,z),(-5,h,z)], float), 0.30))
+        elif kind == "subject" and len(n) >= 3:
+            faces += _subject(n[0], n[1], n[2])
+        elif kind == "ground":
+            faces += _ground()
+        else:
+            raise ValueError("props 行 %d: 不明なタイプ/引数不足: %r" % (ln, raw))
+    return faces
+
+
+def build_scene(scene="corridor", props_text=""):
+    """ベースシーン(corridor/ground/empty)+ props で組んだ面リストを返す。"""
+    faces = []
+    if scene == "corridor":
+        faces += _ground(0.55, 0.38, -4, 5, -2, 16)
+        for zi in range(0, 15):
+            shade = 0.30 if zi % 2 == 0 else 0.24
+            faces.append((np.array([(-4,3.6,zi),(5,3.6,zi),(5,3.6,zi+1),(-4,3.6,zi+1)], float), shade))
+        for zi in range(1, 15, 2):
+            for x in (-3.2, 3.2):
+                faces += _box(x, 1.6, zi, 0.7, 3.2, 0.7, 0.62)
+        for (bx, by, bz) in [(-1.4,1.0,5),(1.6,2.2,8),(0.0,0.7,11),(-1.8,2.6,12)]:
+            faces += _box(bx, by, bz, 0.9, 0.9, 0.9, 0.7)
+        faces.append((np.array([(-4,0,15),(5,0,15),(5,3.6,15),(-4,3.6,15)], float), 0.2))
+    elif scene == "ground":
+        faces += _ground()
+    elif scene == "empty":
+        pass
+    faces += parse_props(props_text)
     return faces
 
 
@@ -290,6 +364,11 @@ class CameraReference3D:
             "optional": {
                 # 複合や任意指定。空でないとき motion を上書き(例: "truck_left+pan_right")
                 "custom_motion": ("STRING", {"default": "", "multiline": False}),
+                # ベースシーン: corridor(柱の回廊) / ground(床のみ) / empty(何もなし)
+                "scene": (["corridor", "ground", "empty"], {"default": "corridor"}),
+                # 小道具 DSL(1行1プリミティブ)。box/sphere/pillar/wall/subject/ground を配置。
+                # 例: "subject 0 7 1.7\nbox 2 0.5 6 1 1 1\nsphere -2 1 8 1.2"
+                "props": ("STRING", {"default": "", "multiline": True}),
             },
         }
 
@@ -297,9 +376,10 @@ class CameraReference3D:
     RETURN_NAMES = ("frames", "fps")
     FUNCTION = "generate"
     CATEGORY = "CameraReference3D"
-    DESCRIPTION = "中立3Dシーンに正確なカメラ軌道を当てた参照フレーム列を生成(Mode B のIC-LoRAガイド入力)。previews/ の動画名を選ぶとその動画を参照として使う。fps を後続へ引き継ぐ"
+    DESCRIPTION = "3Dシーン(corridor/ground/empty + 小道具 props)に正確なカメラ軌道を当てた参照フレーム列を生成。Cameraman=カメラ動作転写 / 3DREAL=構図ごと実写化 の grey blockout 入力に。previews/ の動画名を選べばその動画を参照に使う。fps を後続へ引き継ぐ"
 
-    def generate(self, motion, frames, width, height, amount, hfov, fps=25.0, custom_motion=""):
+    def generate(self, motion, frames, width, height, amount, hfov, fps=25.0,
+                 custom_motion="", scene="corridor", props=""):
         mot = custom_motion.strip() if custom_motion and custom_motion.strip() else motion
 
         # パラメトリックでない名前(= previews/ に置いた動画)なら、その動画を参照として使う。
@@ -317,7 +397,7 @@ class CameraReference3D:
             return (tensor, out_fps)
 
         # パラメトリック生成(従来パス)
-        faces = build_scene()
+        faces = build_scene(scene, props)
         base_f = _hfov_focal(width, hfov)
         arr = np.empty((frames, height, width, 3), dtype=np.float32)
         for i in range(frames):

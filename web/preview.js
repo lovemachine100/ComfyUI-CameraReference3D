@@ -17,7 +17,7 @@ function isParametric(name) {
   return toks.length > 0 && toks.every((t) => BASE_MOTIONS.has(t) || ALIAS_MOTIONS.has(t));
 }
 // 動画モードで隠す widget: amount/hfov は完全に無関係、frames/width/height/fps は動画の値が使われる
-const HIDE_IN_VIDEO = ["amount", "hfov", "frames", "width", "height", "fps"];
+const HIDE_IN_VIDEO = ["amount", "hfov", "frames", "width", "height", "fps", "scene", "props"];
 function setWidgetHidden(w, hidden) {
   if (!w) return;
   if (hidden) {

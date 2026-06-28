@@ -43,12 +43,38 @@ Dependencies (`numpy`, `Pillow`, `torch`) all ship with ComfyUI — nothing extr
 | `hfov` | Horizontal field of view in degrees (default 55°) |
 | `fps` | Frames-per-second to carry to downstream nodes (default 25). **Parametric moves only** — a dropped video uses its own native fps. |
 | `custom_motion` *(optional)* | Override `motion` with text. Combine base tokens with `+` (e.g. `dolly_in+tilt_up`). Empty → use `motion`. |
+| `scene` *(optional)* | Base scene: `corridor` (the pillared hall, default), `ground` (checker floor only), or `empty` (nothing). |
+| `props` *(optional)* | Multiline prop DSL — compose your own grey blockout on top of the base scene (see below). |
 
 Outputs:
 - `frames` — `IMAGE` (`N×H×W×3`) → `LTXAddVideoICLoRAGuide.image`
 - `fps` — `FLOAT` → wire into downstream video nodes (save / VHS / conditioning) so timing is inherited
 
 When you pick a `motion`, a sample clip of that move previews live on the node.
+
+### Compose a grey blockout scene (`scene` + `props`)
+
+Beyond the default corridor, pick a `scene` base and place primitives via the `props` text box
+(one per line, `#` starts a comment) to build your own grey 3D blockout — ideal as the input to a
+**render-to-real IC-LoRA** (e.g. fal's 3DREAL), which keeps the composition/layout and photorealizes it.
+
+```
+# <type> <args...>
+ground                      # checker floor grid
+subject  -1.2 7 1.7         # humanoid placeholder: cx cz height  (legs+torso+head)
+box       0 0.6 6  1.4 1.2 1.4   # cx cy cz  sx sy sz
+sphere   -2.5 1.2 10 1.2     # cx cy cz  radius
+pillar    3 11 3.2 0.4       # cx cz height [radius]
+wall      14                 # back wall at depth z [height]
+```
+
+Coordinates: `+x` right, `+y` up, `+z` into the scene (camera starts near `z=-2` looking toward `+z`).
+The composed scene is driven by the same `motion`/`amount`/`hfov` camera system. In video mode these
+parametric inputs (incl. `scene`/`props`) are hidden.
+
+> Validated with **3DREAL**: a `subject` blockout photorealizes into a real person (clothing, face),
+> faithfully following the blockout outline and camera move. Inorganic props (box/sphere/pillar/wall)
+> stay grey — 3DREAL specializes in subject realification, not arbitrary material assignment.
 
 ### Use your own clip as the reference (drop-in videos)
 
