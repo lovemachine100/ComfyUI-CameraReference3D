@@ -3,3 +3,9 @@ __pycache__/
 *.pyo
 *.pyd
 .DS_Store
+
+# local audit output (not for distribution)
+audit/
+
+# stray working clips dropped into previews (keep only the named camera-move previews)
+web/previews/LTX_*.mp4
