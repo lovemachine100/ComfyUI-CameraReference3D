@@ -11,9 +11,11 @@ ComfyUI-CameraReference3D
 ロジックはスタンドアロン CLI make_reference_video.py と同一。
 
 web/previews/ に動画 (.mp4/.webm/.mov/.gif) を置くと、その名前が motion ドロップダウンに
-自動で並び「選択 → その動画自体を参照フレームとして使う」モードになる。動画モードでは frames /
-width / height / amount / hfov / fps の widget は無視し、動画ネイティブの全フレーム・解像度・fps を
-そのまま出力する。動画デコードのときだけ imageio/cv2 を遅延 import。
+自動で並び「選択 → その動画自体を参照フレームとして使う」モードになる。動画モードでは
+width / height / amount / hfov の widget は無視し、動画ネイティブの解像度を使う。尺は
+frames で指定でき(動画全長から等間隔に frames 枚を抽出してカメラ軌道全体を保持。frames が
+総フレーム数以上なら全フレーム)、生成 latent の length と揃えれば ICLoRAGuide のフレーム超過を
+防げる。fps は動画ネイティブを優先。動画デコードのときだけ imageio/cv2 を遅延 import。
 """
 import math
 import os
@@ -353,7 +355,13 @@ class CameraReference3D:
         return {
             "required": {
                 "motion": (motion_choices(), {"default": "orbit_cw"}),
-                "frames": ("INT", {"default": 97, "min": 1, "max": 1000}),
+                # 生成する参照フレーム数。動画選択モードでも有効: 動画全長から等間隔に
+                # この枚数だけ抽出する(カメラ軌道全体を保持したまま尺を揃えられる)。
+                # 生成側 EmptyLTXVLatentVideo の length と一致させれば LTXAddVideoICLoRAGuide の
+                # "Conditioning frames exceed the length of the latent sequence" を構造的に回避できる。
+                "frames": ("INT", {"default": 97, "min": 1, "max": 1000,
+                                   "tooltip": "参照フレーム数。動画選択時も有効(全長から等間隔抽出して尺を合わせる)。"
+                                              "生成 latent の length と揃えると ICLoRAGuide のフレーム超過を防げる。"}),
                 "width": ("INT", {"default": 544, "min": 64, "max": 4096, "step": 8}),
                 "height": ("INT", {"default": 960, "min": 64, "max": 4096, "step": 8}),
                 "amount": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05}),
@@ -383,8 +391,10 @@ class CameraReference3D:
         mot = custom_motion.strip() if custom_motion and custom_motion.strip() else motion
 
         # パラメトリックでない名前(= previews/ に置いた動画)なら、その動画を参照として使う。
-        # frames / width / height / amount / hfov / fps の widget は無視し、動画ネイティブの
-        # 全フレーム・解像度・fps をそのまま出力する。
+        # width / height / amount / hfov の widget は無視し、動画ネイティブの解像度をそのまま使う。
+        # 尺は frames で指定: 動画全長から等間隔に frames 枚を抽出(カメラ軌道全体を保持)。
+        # frames が動画の総フレーム数以上なら全フレームをそのまま使う(増やせないので clamp)。
+        # fps は動画ネイティブを優先。
         if not is_parametric(mot):
             path = _find_preview_file(mot)
             if path is None:
@@ -393,6 +403,15 @@ class CameraReference3D:
                     "基本トークンの組合せ(例 dolly_in+tilt_up)にするか web/previews/ に %s.mp4 を置いてください。"
                     % (mot, mot))
             tensor, native_fps = load_video_frames(path)
+            # 防御的 coerce: 旧ワークフロー等で frames が ''/None で来ても全フレーム扱いにする。
+            try:
+                n_out = int(frames)
+            except (TypeError, ValueError):
+                n_out = 0
+            n_native = int(tensor.shape[0])
+            if n_out > 0 and n_out < n_native:
+                idx = np.linspace(0, n_native - 1, n_out).round().astype(np.int64)
+                tensor = tensor[idx]
             out_fps = float(native_fps) if native_fps else float(fps)
             return (tensor, out_fps)
 
@@ -432,6 +451,68 @@ def _register_upload_route():
             raw = os.path.splitext(raw)[0]
         stem = _SAFE.sub("_", raw or "").strip("._")
         return stem or "clip"
+
+    def _probe_video_meta(path):
+        """動画の (width, height, frames, fps) を全デコードせず軽量に取得。"""
+        w = h = frames = 0
+        fps = 0.0
+        # 1) imageio (imageio-ffmpeg 同梱) のメタデータを優先
+        try:
+            import imageio.v2 as imageio
+            rdr = imageio.get_reader(path)
+            meta = rdr.get_meta_data() or {}
+            fps = float(meta.get("fps") or 0.0)
+            size = meta.get("size")
+            if size and len(size) == 2:
+                w, h = int(size[0]), int(size[1])
+            nframes = meta.get("nframes")
+            if isinstance(nframes, (int, float)) and nframes not in (0, float("inf")):
+                frames = int(nframes)
+            else:
+                dur = meta.get("duration")
+                if dur and fps:
+                    frames = int(round(float(dur) * fps))
+                else:
+                    try:
+                        frames = int(rdr.count_frames())
+                    except Exception:
+                        frames = 0
+            rdr.close()
+        except Exception:
+            pass
+        # 2) 取りこぼし(解像度/枚数)は cv2 のコンテナメタで補完(瞬時、デコード無し)
+        if (w == 0 or h == 0 or frames == 0):
+            try:
+                import cv2
+                cap = cv2.VideoCapture(path)
+                if w == 0:
+                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                if h == 0:
+                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if frames == 0:
+                    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                if not fps:
+                    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+                cap.release()
+            except Exception:
+                pass
+        return {"width": int(w), "height": int(h), "frames": int(frames), "fps": float(fps)}
+
+    @instance.routes.get("/camera_reference_3d/meta")
+    async def _meta(request):
+        """previews/ の動画の解像度・フレーム数・fps を返す(ノード UI の自動反映用)。"""
+        stem = (request.query.get("name") or "").strip()
+        if not stem:
+            return web.json_response({"error": "name がありません"}, status=400)
+        path = _find_preview_file(stem)
+        if path is None:
+            return web.json_response({"error": "previews に動画がありません: %s" % stem}, status=404)
+        try:
+            meta = _probe_video_meta(path)
+        except Exception as e:
+            return web.json_response({"error": "メタ取得失敗: %s" % e}, status=500)
+        meta["name"] = stem
+        return web.json_response(meta)
 
     @instance.routes.post("/camera_reference_3d/upload")
     async def _upload(request):

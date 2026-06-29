@@ -1,23 +1,15 @@
 import { app } from "../../scripts/app.js";
 
+
 // Camera Reference (3D): motion を選ぶとノード上にその動きのサンプル映像をプレビュー表示
 const PKG = "ComfyUI-CameraReference3D";
 const BASE = `/extensions/${PKG}/previews/`;
 // 固定リストは持たない: 選択名の <name>.mp4 を素直に読み、無ければ static.mp4 にフォールバック。
 // これで previews/ に動画を足すだけで(ドロップダウンに並び)そのままプレビューも出る。
 
-// パラメトリック(その場で 3D 計算する)動作の判定用。動画選択時はこれら以外になる。
-const BASE_MOTIONS = new Set(["dolly_in","dolly_out","pan_left","pan_right","tilt_up","tilt_down",
-  "truck_left","truck_right","pedestal_up","pedestal_down","roll_cw","roll_ccw",
-  "zoom_in","zoom_out","orbit_cw","orbit_ccw","static"]);
-const ALIAS_MOTIONS = new Set(["low_angle"]);
-function isParametric(name) {
-  if (ALIAS_MOTIONS.has(name)) return true;
-  const toks = String(name || "").split("+").map((s) => s.trim()).filter(Boolean);
-  return toks.length > 0 && toks.every((t) => BASE_MOTIONS.has(t) || ALIAS_MOTIONS.has(t));
-}
-// 動画モードで隠す widget: amount/hfov は完全に無関係、frames/width/height/fps は動画の値が使われる
-const HIDE_IN_VIDEO = ["amount", "hfov", "frames", "width", "height", "fps", "scene", "props"];
+// 常に非表示にする項目(ユーザー設定: 使っていない高度な項目)。
+// 表示する基本: motion / width / height / frames / fps / プレビュー / アップロードボタン。
+const HIDE_ALWAYS = ["amount", "hfov", "scene", "props", "custom_motion"];
 function setWidgetHidden(w, hidden) {
   if (!w) return;
   if (hidden) {
@@ -40,29 +32,84 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       const ret = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
 
-      // プレビュー用の video 要素
+      const self = this;
+      const motionWidget = () => self.widgets?.find((w) => w.name === "motion");
+      const customWidget = () => self.widgets?.find((w) => w.name === "custom_motion");
+      // widget の値をセット(UI に反映)。同値ならスキップ。
+      const setWidgetValue = (name, val) => {
+        const w = self.widgets?.find((x) => x.name === name);
+        if (!w || val === undefined || val === null || w.value === val) return;
+        w.value = val;
+        try { if (typeof w.callback === "function") w.callback(val); } catch (e) {}
+      };
+      // 使っていない項目(amount/hfov/scene/props/custom_motion)を常に非表示にする
+      for (const name of HIDE_ALWAYS) setWidgetHidden(self.widgets?.find((x) => x.name === name), true);
+
+      // プレビューは「固定高さの箱 + overflow:hidden」に入れる。
+      // → 縦長動画でも箱の中で letterbox され、絶対にノードを突き破らない。
+      const PREVIEW_BOX_H = 200; // 動画表示ボックスの固定高さ(px)
       const video = document.createElement("video");
       Object.assign(video, { loop: true, muted: true, autoplay: true, playsInline: true });
-      Object.assign(video.style, {
-        width: "100%", borderRadius: "6px", background: "#0e1017",
-        objectFit: "contain", display: "block",
+      Object.assign(video.style, { width: "100%", height: "100%", objectFit: "contain", display: "block" });
+
+      const box = document.createElement("div");
+      Object.assign(box.style, {
+        position: "relative", width: "100%", height: PREVIEW_BOX_H + "px", overflow: "hidden",
+        borderRadius: "6px", background: "#0e1017", boxSizing: "border-box",
       });
 
-      // ラベル(現在の motion 名)
-      const wrap = document.createElement("div");
+      // ラベル(解像度/長さ)は動画ボックスの下部に「重ねて」表示する。
+      // ボックスは描画確認済 → 中に入れれば新フロントでもクリップされず確実に見える。
       const label = document.createElement("div");
       Object.assign(label.style, {
-        font: "11px system-ui", color: "#9aa3b5", textAlign: "center",
-        padding: "2px 0 4px",
+        position: "absolute", left: "0", right: "0", bottom: "0",
+        font: "11px system-ui", color: "#fff", textAlign: "center",
+        padding: "3px 5px", background: "rgba(0,0,0,0.62)", boxSizing: "border-box",
+        lineHeight: "1.25", wordBreak: "break-all", pointerEvents: "none",
       });
-      wrap.appendChild(video);
-      wrap.appendChild(label);
+      box.appendChild(video);
+      box.appendChild(label);
 
-      this._b03 = { video, label };
-      this.addDOMWidget("preview", "b03preview", wrap, { serialize: false, hideOnZoom: false });
+      const wrap = document.createElement("div");
+      Object.assign(wrap.style, { width: "100%", boxSizing: "border-box" });
+      wrap.appendChild(box);
 
-      const motionWidget = () => this.widgets?.find((w) => w.name === "motion");
-      const customWidget = () => this.widgets?.find((w) => w.name === "custom_motion");
+      this._b03 = { video, label, box };
+      const previewWidget = this.addDOMWidget("preview", "b03preview", wrap, { serialize: false, hideOnZoom: false });
+      // DOM ウィジェットの高さを固定 → ノードがこの分の高さを必ず確保し、はみ出さない。
+      const PREVIEW_TOTAL_H = PREVIEW_BOX_H + 8;
+      const NODE_W = 260; // コンパクトなノード幅(間延び防止)
+      if (previewWidget) {
+        // 希望幅を固定の NODE_W にする(現在幅追従だと一度広がると戻らず間延びする)
+        previewWidget.computeSize = () => [NODE_W, PREVIEW_TOTAL_H];
+        try { Object.assign(previewWidget, { height: PREVIEW_TOTAL_H }); } catch (e) {}
+      }
+
+      // ノードを widget 構成に合わせてコンパクトに収める(幅も詰める)
+      const fitNode = () => {
+        requestAnimationFrame(() => {
+          try {
+            if (!self.computeSize) return;
+            const s = self.computeSize();
+            self.setSize([Math.max(NODE_W, s[0]), s[1]]);
+            self.setDirtyCanvas && self.setDirtyCanvas(true, true);
+          } catch (e) {}
+        });
+      };
+      video.addEventListener("loadeddata", fitNode);
+      self.__b03fitNode = fitNode; // onConfigure からも呼べるよう保持
+
+      // previews 動画のメタ(解像度・フレーム数・fps)を取得(キャッシュ)
+      const metaCache = {};
+      const fetchMeta = async (stem) => {
+        if (metaCache[stem]) return metaCache[stem];
+        try {
+          const r = await fetch("/camera_reference_3d/meta?name=" + encodeURIComponent(stem));
+          const j = await r.json();
+          if (r.ok && !j.error) { metaCache[stem] = j; return j; }
+        } catch (e) {}
+        return null;
+      };
 
       const resolveKey = () => {
         const cm = (customWidget()?.value || "").trim();
@@ -81,7 +128,8 @@ app.registerExtension({
         if (!video.src.endsWith(fb)) video.src = fb;
       });
 
-      this._b03update = () => {
+      this._b03update = (opts) => {
+        opts = opts || {};
         const { key, label: txt } = resolveKey();
         const src = BASE + encodeURIComponent(key) + ".mp4";
         if (!video.src.endsWith(src)) {
@@ -90,43 +138,73 @@ app.registerExtension({
           if (p && p.catch) p.catch(() => {});
         }
 
-        // 動画モードか? = 実効選択がパラメトリックでない
-        const cm = (customWidget()?.value || "").trim();
-        const eff = cm || (motionWidget()?.value || "orbit_cw");
-        const videoMode = !isParametric(eff);
-
-        // amount/hfov/frames/width/height/fps を動画モードでは隠す
-        let changed = false;
-        for (const name of HIDE_IN_VIDEO) {
-          const w = this.widgets?.find((x) => x.name === name);
-          const before = w && w.type;
-          setWidgetHidden(w, videoMode);
-          if (w && w.type !== before) changed = true;
-        }
-        if (changed && this.computeSize) {
-          const s = this.computeSize();
-          this.setSize([Math.max(this.size[0], s[0]), s[1]]);
-          this.setDirtyCanvas && this.setDirtyCanvas(true, true);
-        }
-
-        label.textContent = "▶ " + txt + (videoMode ? "  ·  動画のframes/解像度/fpsを使用" : "");
+        // 「今プレビューに表示している動画そのもの」の解像度/長さを取得し、
+        // ★ width/height 入力欄にその値をセットする(= 入力欄が表示中動画の解像度に変わる)。
+        // ただしユーザー操作(motion 変更)のときだけ。保存ワークフロー復元時は上書きしない。
+        const userChanged = !!opts.userChanged;
+        label.textContent = "▶ " + txt + "  ·  読み込み中…";
+        fetchMeta(key).then((meta) => {
+          if (!meta) {
+            label.textContent = "▶ " + txt;
+            return;
+          }
+          const fpsR = meta.fps ? Math.round(meta.fps) : "?";
+          const spec = `${meta.width}×${meta.height} / ${meta.frames}f / ${fpsR}fps`;
+          label.textContent = `▶ ${txt}  ·  ${spec}`;
+          if (userChanged) {
+            // 入力欄を「表示中動画の値」に合わせる:
+            //   width/height = 解像度, frames = 全体フレーム数, fps = フレームレート
+            //   (pan_right→220×220/49f/24fps, アップロード→704×1280/121f/25fps)
+            setWidgetValue("width", meta.width);
+            setWidgetValue("height", meta.height);
+            if (meta.frames > 0) setWidgetValue("frames", meta.frames);
+            if (meta.fps > 0) setWidgetValue("fps", Math.round(meta.fps * 100) / 100);
+            self.setDirtyCanvas && self.setDirtyCanvas(true, true);
+          }
+          const g = (nm) => self.widgets?.find((x) => x.name === nm)?.value;
+        });
       };
 
-      // widget の callback にフック
+      const updateSafe = (opts) => { try { self._b03update(opts); } catch (e) {} };
+
+      // (A) widget の callback にフック(litegraph 経路)
       for (const wname of ["motion", "custom_motion"]) {
         const w = this.widgets?.find((x) => x.name === wname);
         if (w) {
           const prev = w.callback;
           w.callback = function () {
             const r = prev ? prev.apply(this, arguments) : undefined;
-            // 次フレームで反映(値確定後)
-            requestAnimationFrame(() => app.graph?._nodes && updateSafe());
+            requestAnimationFrame(() => updateSafe({ userChanged: true }));
             return r;
           };
         }
       }
-      const self = this;
-      const updateSafe = () => { try { self._b03update(); } catch (e) {} };
+
+      // (B) value セッターにもフック。ComfyUI 0.25 では combo 変更が callback(A)を経由せず
+      //     .value を直接代入する経路があり、(A) だけだと「選択しても変わらない」ことがある。
+      //     復元(configure)中は __b03restoring=true なので userChanged=false → width/height を上書きしない。
+      const installValueWatcher = (w) => {
+        if (!w || w.__b03watched) return;
+        w.__b03watched = true;
+        let _v = w.value;
+        try {
+          Object.defineProperty(w, "value", {
+            configurable: true,
+            enumerable: true,
+            get() { return _v; },
+            set(nv) {
+              const changed = nv !== _v;
+              _v = nv;
+              if (changed) {
+                const uc = !self.__b03restoring;
+                requestAnimationFrame(() => updateSafe({ userChanged: uc }));
+              }
+            },
+          });
+        } catch (e) {}
+      };
+      installValueWatcher(motionWidget());
+      installValueWatcher(customWidget());
 
       // 動画を web/previews/ にアップロードするボタン
       this.addWidget("button", "📤 動画をアップロード → previews", null, () => {
@@ -163,7 +241,7 @@ app.registerExtension({
               mw.value = j.name;
               if (typeof mw.callback === "function") mw.callback(j.name);
             }
-            updateSafe();
+            updateSafe({ userChanged: true });
             label.textContent = "▶ " + j.name +
               (j.renamed ? "（同名のため改名）" : "（アップロード完了）");
           } catch (e) {
@@ -176,18 +254,34 @@ app.registerExtension({
       });
 
       updateSafe();
-      // ノードサイズを少し広げてプレビューを見やすく
-      const sz = this.computeSize ? this.computeSize() : null;
-      if (sz) this.setSize([Math.max(this.size[0], 240), sz[1]]);
+      fitNode(); // 作成時にコンパクト幅へ収める
 
       return ret;
     };
 
-    // ワークフロー読み込み時(configure)にもプレビューを復元
+    // ワークフロー復元中は __b03restoring を立て、値セッター(B)が userChanged 扱いで
+    // width/height を上書きしないようにする(保存値を尊重)。
+    const origConfigure = nodeType.prototype.configure;
+    nodeType.prototype.configure = function () {
+      this.__b03restoring = true;
+      try {
+        return origConfigure ? origConfigure.apply(this, arguments) : undefined;
+      } finally {
+        const node = this;
+        requestAnimationFrame(() => { node.__b03restoring = false; });
+      }
+    };
+
+    // ワークフロー読み込み時(configure)にもプレビュー/ラベルを復元(userChanged なし=値は尊重)
     const onConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function () {
       const r = onConfigure ? onConfigure.apply(this, arguments) : undefined;
-      if (this._b03update) requestAnimationFrame(() => { try { this._b03update(); } catch (e) {} });
+      const node = this;
+      if (this._b03update) requestAnimationFrame(() => {
+        try { node._b03update(); } catch (e) {}
+        // 保存時に間延びした幅もコンパクトに収め直す
+        try { node.__b03fitNode && node.__b03fitNode(); } catch (e) {}
+      });
       return r;
     };
   },

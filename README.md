@@ -79,15 +79,34 @@ parametric inputs (incl. `scene`/`props`) are hidden.
 ### Use your own clip as the reference (drop-in videos)
 
 Drop any video (`.mp4` / `.webm` / `.mov` / `.gif` / …) into `web/previews/` and **its name appears
-in the `motion` dropdown** after a page refresh. Selecting it makes the node **decode that video and output
-its native frames, resolution and fps unchanged** as the reference batch — instead of the parametric
-corridor render.
+in the `motion` dropdown** after a page refresh. Selecting it makes the node **decode that video and use it**
+as the reference batch — instead of the parametric corridor render.
 
-In this video mode the geometry widgets don't apply, so the node UI **hides `amount`, `hfov`, `frames`,
-`width`, `height` and `fps`** while a video is selected (the clip itself dictates frame count, resolution
-and fps). Pick a parametric move again and they reappear. Names that match a parametric move (or a
+**`frames` controls the length even in video mode** (since v2.2.0): the clip is **uniformly resampled to
+`frames` frames across its whole span**, so the full camera trajectory is preserved while the length matches
+your generation. Set `frames` equal to your `EmptyLTXVLatentVideo` `length` (e.g. 97) and a long source clip
+(say 121 frames) is trimmed to fit — this structurally avoids `LTXAddVideoICLoRAGuide`'s
+*"Conditioning frames exceed the length of the latent sequence"*. If `frames` ≥ the clip's native frame count,
+all native frames are used as-is (you can't invent frames). `frames = 0`/empty also falls back to all native.
+
+The other geometry widgets still don't apply in video mode, so the node UI **hides `amount`, `hfov`,
+`width`, `height` and `fps`** while a video is selected (the clip dictates resolution and fps); `frames` stays
+visible. Pick a parametric move again and the rest reappear. Names that match a parametric move (or a
 `+`-composite of base tokens) still render parametrically and honor those widgets. Video decoding lazily
 imports `imageio` / `cv2` only when a clip is actually used — the parametric path stays dependency-free.
+
+**The clip's resolution & length are shown in the label (since v2.3.0).** When you select a video, the node queries
+a lightweight backend route (`/camera_reference_3d/meta`, metadata only — no full decode) and the preview label
+shows `元 width×height/frames/fps → 出力 Nf`, i.e. the clip's native size/length/fps **and** the number of frames
+that will actually be output (`N = min(frames, native)`). The label always reflects the current state — the clip's
+native size in video mode, the `width`/`height`/`frames` widgets in parametric mode — so switching modes updates
+it immediately. The preview video is height-capped so a tall portrait clip no longer overflows the node body.
+
+**`frames` is never auto-overwritten (since v2.5.0).** Selecting a clip does **not** touch the `frames` widget — it
+stays at the value you set (typically your latent `length`, e.g. 97), and the clip is resampled to that many frames
+automatically. So you set `frames` once to match your generation and never have to re-type it per clip. The node
+adds no extra input and writes no widget on selection, so existing workflows stay byte-compatible and switching
+between video and parametric moves never pollutes `frames` / `width` / `height`.
 
 #### Upload a clip from the node (no manual file copying)
 
