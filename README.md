@@ -157,6 +157,40 @@ elif m == "my_move":  C[0] += 2.0*A*e   # e.g. translate right
 
 `nodes.py` / `preview.js` changes take effect on **ComfyUI restart**.
 
+## Splat camera nodes — `RenderSplatPath` / `RenderSplatCinematic`
+
+Two companion nodes (category `3d/splat`, added v2.7.0) that render a **static 3D Gaussian
+splat** (`SPLAT`, e.g. from TripoSplat) along a nicer camera path than core `RenderSplat`,
+which forces a full **360° turntable**. A single-view splat reconstructs the *front* well but
+hallucinates the *back/sides*, so a 360 always rotates through the broken region — these keep
+the camera on the good side. Output is an `IMAGE` batch you can wire straight into
+`LTXAddVideoICLoRAGuide.image` (e.g. → fal **3DREAL** render-to-real).
+
+> A splat is a frozen snapshot, so these move the **camera only** (the subject can't be animated).
+> They reuse ComfyUI's own splat rasterizer internals, so image quality matches `RenderSplat`.
+> **Requires** a ComfyUI build with `comfy_extras.nodes_gaussian_splat` (~0.26+); on older builds
+> the two nodes disable themselves and `CameraReference3D` still loads.
+
+**`Render Splat Cinematic (presets)`** (`RenderSplatCinematic`) — cinematic camera presets:
+
+| Param | Description |
+|---|---|
+| `preset` | 12 moves — `orbit_push` (arc+push, hero) · `pan_reveal` · `crane_up` · `dolly_zoom` (vertigo) · `handheld` · `float_bob` · `push_in` (straight dolly-in) · `pull_back` (dolly-out reveal) · `truck` (lateral slide/parallax) · `boom_down` (descend, low angle) · `spiral` (orbit + rise) · `sway` (organic side-to-side) |
+| `yaw_center` | Aim of the shot. **~66 = straight front** of a TripoSplat portrait (matches a front-facing input) |
+| `subject_fill` | Fraction of the frame **height** the subject fills — *aspect-independent* (default 0.72). Raise if the subject looks too small/far on 9:16 |
+| `move_amount` | Strength of the primary move. Low (~0.3) keeps the orientation close to the input; raise for bigger moves |
+| `bob_amount` / `handheld_amount` | Global overlays (vertical bob / organic handheld jitter) on any preset |
+| `easing` | `ease_in_out` / `ease_out` / `ease_in` / `linear` · `loop` = seamless out-and-back |
+| `pitch` / `fov` / `opacity_threshold` / `render_style` (`color`/`clay`/…) / `background` | standard render controls |
+
+**`Render Splat Path (bounded camera)`** (`RenderSplatPath`) — the simple version: a bounded
+front `arc` and/or `dolly_in` with a `pingpong` (seamless) or `linear` sweep.
+
+Framing is **height-based and robust**: a percentile bounding box ignores stray-gaussian smears,
+so the subject fills the same fraction of the frame height on any aspect (incl. tall 9:16) and stays
+centered. Cull leftover smears with `opacity_threshold` (~0.4). `render_style = clay` gives a
+textureless grey render (3DREAL then produces a photoreal *statue* rather than a coloured person).
+
 ## License
 
 MIT (this node). Note the camera-motion transfer is designed for the LTX-2.3 **Cameraman
